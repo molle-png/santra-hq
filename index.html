@@ -213,6 +213,44 @@ let state = {
   q2_seed: '', q2_mrr: '', q2_moments: '', commitments: '',
 };
 
+// ── HQ submit hop (memo → Apps Script → "Santra Weekly Memos" Sheet) ──────
+// Set after deploying the Apps Script web app (see cockpit spec
+// 2026-05-24-santra-hq-memo-pipeline-design.md). Empty URL = hop disabled,
+// page behaves exactly as before (copy → Telegram).
+const APPS_SCRIPT_URL = '';
+const SUBMIT_TOKEN = '8af9d1ee9447940f84176d51'; // soft anti-spam gate, not a secret
+
+// "4.5 — note text" → { score: "4.5", note: "note text" }; no leading number
+// → whole text in score (the cockpit reader extracts the first number).
+function splitRating(t) {
+  const m = (t || '').trim().match(/^(-?\d+(?:\.\d+)?)\s*[,·\-–—:\/]*\s*([\s\S]*)$/);
+  return m ? { score: m[1], note: m[2].trim() } : { score: (t || '').trim(), note: '' };
+}
+
+function submitToHQ() {
+  if (!APPS_SCRIPT_URL) return Promise.reject(new Error('hop disabled'));
+  const seed = splitRating(state.q2_seed);
+  const mrr = splitRating(state.q2_mrr);
+  const moments = splitRating(state.q2_moments);
+  return fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    mode: 'no-cors', // simple request — Apps Script can't answer a preflight
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      token: SUBMIT_TOKEN,
+      name: state.name,
+      role: state.role,
+      output: state.completed,
+      in_flight: state.in_flight,
+      blockers: state.blockers,
+      q2_seed_score: seed.score, q2_seed_note: seed.note,
+      q2_mrr_score: mrr.score, q2_mrr_note: mrr.note,
+      q2_moments_score: moments.score, q2_moments_note: moments.note,
+      next7: state.commitments,
+    }),
+  });
+}
+
 function updateProgress(step) {
   document.getElementById('progress-text').textContent = PROGRESS_LABELS[step] || '';
   const pct = PROGRESS_PCT[step] || 0;
@@ -441,7 +479,12 @@ function advance(input) {
       removeTyping();
       showMemo(generateMemo());
       setTimeout(() => {
-        addMsg(`Memo ready. Copy it and send to <b>@molle3x</b> on Telegram.`, 'bot');
+        // Auto-submit to HQ; the response is opaque (no-cors) so the success
+        // message is optimistic. On rejection (offline / hop disabled) we
+        // degrade to today's copy-to-Telegram behavior — a memo is never lost.
+        submitToHQ()
+          .then(() => addMsg(`✓ Sent to santra HQ — it lands on the cockpit within ~5 minutes. (The copy above is your backup.)`, 'bot'))
+          .catch(() => addMsg(`Memo ready. Copy it and send to <b>@molle3x</b> on Telegram.`, 'bot'));
         document.getElementById('input').disabled = true;
         document.getElementById('sendBtn').disabled = true;
         document.getElementById('input').placeholder = 'Memo complete. Refresh to start a new one.';
